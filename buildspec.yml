@@ -35,7 +35,7 @@ phases:
       - aws s3 mb s3://airbnb-booking-records4
       
       # Create the EventBridge rule to trigger the destination Lambda function
-      - aws events put-rule --name FilteredBookingRule --event-pattern "{\"source\": [\"aws.sqs\"], \"detail-type\": [\"SQS Message Sent\"], \"detail\": {\"queueName\": [\"AirbnbBookingQueue\"]}}"
+      - aws events put-rule --name FilteredBookingRule --event-pattern "{\"source\": [\"aws.sqs\"], \"detail-type\": [\"SQS Message Sent\"], \"detail\": {\"queueName\": [\"AirbnbBookingQueue\"]}"
       
       # Create the EventBridge pipe
       - PIPE_FILTER_ARN=$(aws events create-archive ... --query 'ArchiveArn' --output text)
