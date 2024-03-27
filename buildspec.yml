@@ -1,0 +1,38 @@
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.11
+    commands:
+      - pip install awscli
+      - pip install boto3
+  build:
+    commands:
+      # Create and configure the SQS queue
+      - aws sqs create-queue --queue-name AirbnbBookingQueue
+      - aws sqs create-queue --queue-name AirbnbBookingDLQ
+      - aws sqs set-queue-attributes --queue-url <AirbnbBookingQueue_URL> --attributes AttributeName=RedrivePolicy,AttributeValue='{"deadLetterTargetArn":"<AirbnbBookingDLQ_ARN>","maxReceiveCount":"3"}'
+      
+      # Create the producer Lambda function
+      - aws lambda create-function --function-name ProduceAirbnbBookingData --runtime python3.11 --role <producer_lambda_role_arn> --handler lambda_function.lambda_handler --zip-file fileb://producer_lambda.zip
+
+      # Create the destination Lambda function
+      - aws lambda create-function --function-name ProcessFilteredBookings --runtime python3.11 --role <destination_lambda_role_arn> --handler lambda_function.lambda_handler --zip-file fileb://destination_lambda.zip
+      
+      # Create the EventBridge rule to trigger the destination Lambda function
+      - aws events put-rule --name FilteredBookingRule --event-pattern "{\"source\": [\"aws.sqs\"], \"detail-type\": [\"SQS Message Sent\"], \"detail\": {\"queueName\": [\"AirbnbBookingQueue\"]}}"
+      - aws events put-targets --rule FilteredBookingRule --targets "[{\"id\": \"1\", \"arn\": \"<ProcessFilteredBookings_lambda_arn>\", \"inputTransformer\": {\"inputTemplate\": \"{\\\"booking_duration\\\": <booking_duration>, \\\"booking_data\\\": \\\"<booking_data>\\\"}\", \"inputPathsMap\": {\"booking_duration\": \"$.detail.booking_duration\", \"booking_data\": \"$.detail.booking_data\"}}}]"
+      - aws events enable-rule --name FilteredBookingRule
+      
+      # Create the EventBridge pipe
+      - aws events create-archive --name AirbnbBookingPipe --event-source <AirbnbBookingQueue_URL>
+      - aws events create-archive --name AirbnbBookingPipeFilter --event-source <AirbnbBookingQueue_URL>
+      - aws events create-pipe --name AirbnbBookingPipe --source-archive AirbnbBookingPipe --destination-arn <ProcessFilteredBookings_lambda_arn> --destination-role-arn <destination_lambda_role_arn> --max-provisioned-bandwidth 1000
+      - aws events put-pipe-filter --name AirbnbBookingPipeFilter --pipe-name AirbnbBookingPipe --filter-arn <AirbnbBookingPipeFilter_ARN> --filter-rules "{\"booking_duration\":\"greater than 1 day\"}"
+      - aws events enable-pipe --name AirbnbBookingPipe
+
+  post_build:
+    commands:
+      # Cleanup temporary files
+      - rm producer_lambda.zip destination_lambda.zip
