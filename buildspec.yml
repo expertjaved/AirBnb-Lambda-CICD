@@ -13,16 +13,23 @@ phases:
       # Create and configure the SQS queue
       - aws sqs create-queue --queue-name AirbnbBookingQueue
       - aws sqs create-queue --queue-name AirbnbBookingDLQ
-      - aws sqs set-queue-attributes --queue-url <AirbnbBookingQueue_URL> --attributes AttributeName=RedrivePolicy,AttributeValue='{"deadLetterTargetArn":"<AirbnbBookingDLQ_ARN>","maxReceiveCount":"3"}'
+      - BOOKING_QUEUE_URL=$(aws sqs create-queue --queue-name AirbnbBookingQueue --query 'QueueUrl' --output text)
+      - BOOKING_DLQ_ARN=$(aws sqs create-queue --queue-name AirbnbBookingDLQ --query 'QueueArn' --output text)
+      - aws sqs set-queue-attributes --queue-url "$BOOKING_QUEUE_URL" --attributes AttributeName=RedrivePolicy,AttributeValue='{"deadLetterTargetArn":"'"$BOOKING_DLQ_ARN"'","maxReceiveCount":"3"}'
+      
+      # Create IAM roles for Lambda functions
+      - PRODUCER_LAMBDA_ROLE_ARN=$(aws iam create-role --role-name ProducerLambdaRole --assume-role-policy-document file://producer-lambda-role-policy.json --query 'Role.Arn' --output text)
+      - ENRICHMENT_LAMBDA_ROLE_ARN=$(aws iam create-role --role-name EnrichmentLambdaRole --assume-role-policy-document file://enrichment-lambda-role-policy.json --query 'Role.Arn' --output text)
+      - DESTINATION_LAMBDA_ROLE_ARN=$(aws iam create-role --role-name DestinationLambdaRole --assume-role-policy-document file://destination-lambda-role-policy.json --query 'Role.Arn' --output text)
       
       # Create the producer Lambda function
-      - aws lambda create-function --function-name ProduceAirbnbBookingData --runtime python3.11 --role <producer_lambda_role_arn> --handler lambda_function.lambda_handler --zip-file fileb://producer_lambda.zip
+      - PRODUCER_LAMBDA_ARN=$(aws lambda create-function ... --role "$PRODUCER_LAMBDA_ROLE_ARN" --query 'FunctionArn' --output text)
       
       # Create the enrichment Lambda function
-      - aws lambda create-function --function-name EnrichAirbnbBookingData --runtime python3.11 --role <enrichment_lambda_role_arn> --handler lambda_function.lambda_handler --zip-file fileb://enrichment_lambda.zip
+      - ENRICHMENT_LAMBDA_ARN=$(aws lambda create-function ... --role "$ENRICHMENT_LAMBDA_ROLE_ARN" --query 'FunctionArn' --output text)
       
       # Create the destination Lambda function
-      - aws lambda create-function --function-name ProcessFilteredBookings --runtime python3.11 --role <destination_lambda_role_arn> --handler lambda_function.lambda_handler --zip-file fileb://destination_lambda.zip
+      - DESTINATION_LAMBDA_ARN=$(aws lambda create-function ... --role "$DESTINATION_LAMBDA_ROLE_ARN" --query 'FunctionArn' --output text)
       
       # Create the S3 bucket
       - aws s3 mb s3://airbnb-booking-records4
@@ -31,10 +38,9 @@ phases:
       - aws events put-rule --name FilteredBookingRule --event-pattern "{\"source\": [\"aws.sqs\"], \"detail-type\": [\"SQS Message Sent\"], \"detail\": {\"queueName\": [\"AirbnbBookingQueue\"]}}"
       
       # Create the EventBridge pipe
-      - aws events create-archive --name AirbnbBookingPipe --event-source <AirbnbBookingQueue_URL>
-      - aws events create-archive --name AirbnbBookingPipeFilter --event-source <AirbnbBookingQueue_URL>
-      - aws events create-pipe --name AirbnbBookingPipe --source-archive AirbnbBookingPipe --enrichment-arn <EnrichAirbnbBookingData_lambda_arn> --enrichment-role-arn <enrichment_lambda_role_arn> --destination-arn <ProcessFilteredBookings_lambda_arn> --destination-role-arn <destination_lambda_role_arn> --source-type SQS --source-arn <AirbnbBookingQueue_ARN> --max-provisioned-bandwidth 1000
-      - aws events put-pipe-filter --name AirbnbBookingPipeFilter --pipe-name AirbnbBookingPipe --filter-arn <AirbnbBookingPipeFilter_ARN> --filter-rules "{\"booking_duration\":\"greater than 1 day\"}"
+      - PIPE_FILTER_ARN=$(aws events create-archive ... --query 'ArchiveArn' --output text)
+      - aws events create-pipe --name AirbnbBookingPipe --source-archive AirbnbBookingPipe --enrichment-arn "$ENRICHMENT_LAMBDA_ARN" --destination-arn "$DESTINATION_LAMBDA_ARN" --source-type SQS --source-arn "$BOOKING_QUEUE_URL" --max-provisioned-bandwidth 1000
+      - aws events put-pipe-filter --name AirbnbBookingPipeFilter --pipe-name AirbnbBookingPipe --filter-arn "$PIPE_FILTER_ARN" --filter-rules "{\"booking_duration\":\"greater than 1 day\"}"
       - aws events enable-pipe --name AirbnbBookingPipe
 
   post_build:
